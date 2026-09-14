@@ -50,6 +50,10 @@ def main():
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--min-runtime", type=float, default=0.05,
                     help="skip cases the exact search already solves instantly")
+    ap.add_argument("--max-runtime", type=float, default=30.0,
+                    help="skip cases so slow that repeating both arms is "
+                         "unaffordable; the ratio is what matters, not the "
+                         "absolute scale")
     ap.add_argument("--max-cases", type=int, default=40)
     ap.add_argument("--tmpdir", default="/tmp")
     args = ap.parse_args()
@@ -63,12 +67,16 @@ def main():
                 continue
             if r["timed_out"].lower() == "true" or r["killed"].lower() == "true":
                 continue
-            if float(r["runtime"]) < args.min_runtime:
+            if not (args.min_runtime <= float(r["runtime"]) <= args.max_runtime):
                 continue
             cases.append((float(r["runtime"]), r["graph"], r["rulebook"],
                           r["s"], r["t"]))
     cases.sort(reverse=True)
-    cases = cases[:args.max_cases]
+    if len(cases) > args.max_cases:
+        # Sample evenly across the runtime range instead of taking only the
+        # slowest, so the result is not dominated by a handful of outliers.
+        step = len(cases) / args.max_cases
+        cases = [cases[int(i * step)] for i in range(args.max_cases)]
     print(f"{len(cases)} eligible cases "
           f"(exact runtime {cases[-1][0]:.3f}s .. {cases[0][0]:.3f}s)"
           if cases else "no eligible cases")
