@@ -20,7 +20,13 @@ Compares five angles against a brute-force-validated ground truth, under a
 | `rapex` | RA\*pex — complete ε-coverage, members need not be optimal |
 | `topolex` | multi-phase Dijkstra over linear extensions — every member optimal, coverage not guaranteed |
 | `peel` | Dijkstra reduction of the globally-dominant rule prefix — exact |
-| `seed-exact` | `topolex` as a warm start for the exact search |
+| `seed-exact` | `topolex` as a warm start for the exact search — **measured, does not help** |
+
+**Results in one line:** TopoLex is ~4 orders of magnitude faster than the exact
+search and never returned a non-optimal solution, but recovers only 16–26% of
+the frontier; peeling is exact and nearly free but only applies to rulebooks
+whose frontier was already trivial; seeding the exact search is a dead end. See
+[`rulebook-pareto/README.md#6-findings`](rulebook-pareto/README.md#6-findings).
 
 See [`rulebook-pareto/README.md`](rulebook-pareto/README.md) for the soundness
 proofs behind `topolex` and `peel`, the metrics, and how to reproduce the runs.

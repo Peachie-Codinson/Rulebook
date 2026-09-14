@@ -184,15 +184,115 @@ of the dominance relation:
 
 ---
 
-## 6. Open threads
+## 6. Findings
+
+Full sweep: 294 cases (random / grid / layered-DAG graphs x 7 rulebook shapes),
+10-minute per-case cap, 13 cases dropped, 281 kept. Generated report in
+[`results/report.md`](results/report.md).
+
+The short version: **the two cheap angles work exactly where they are not
+needed, and the expensive case stays expensive.**
+
+### TopoLex is sound, fast, and does not cover the frontier
+
+On `flat4`, the hardest shape (mean frontier 949 solutions):
+
+| solver | mean s | max s | size | sound | recall | eps\* |
+|---|---|---|---|---|---|---|
+| `exact` | 5.51 | 77.40 | 949 | 30/30 | 1.000 | 0.000 |
+| `rapex` eps=0.01 | 4.03 | 62.55 | 561 | **23/30** | 0.773 | 0.010 |
+| `topolex` | **0.0011** | 0.0075 | 4.0 | **30/30** | **0.158** | 1.552 |
+
+The soundness lemma holds up empirically: `topolex` never returned a
+non-optimal solution, in 294/294 benchmark cases and 126/126 brute-force
+validation triples. RA\*pex at eps=0.01 returned a non-optimal solution in 7 of
+30 `flat4` cases — which is not a bug, Definition 6 of the paper explicitly
+permits it, but it is the concrete trade between the two guarantees.
+
+The cost is coverage. TopoLex returns one solution per linear extension — 4 on a
+flat 4-rule book, 2 on `diamond4` — so it recovers 16–26% of the frontier and
+needs eps ~1.5 to cover the rest. It is a **certified-optimal sample**, not a
+frontier approximation, and should not be sold as the latter.
+
+### Peeling is exact and nearly free, and buys nothing
+
+Peeling removes ~97% of edges where it applies:
+
+| rulebook | rules peeled | edges left | frontier size |
+|---|---|---|---|
+| `chain4` | 4.00 | 2.8% | 1.0 |
+| `chain2top` | 2.00 | 2.8% | 1.0 |
+| `top1` | 1.00 | 2.9% | 1.0 |
+| `diamond4` | **0.00** | 100% | 30.2 |
+| `flat4` | **0.00** | 100% | 949.0 |
+
+But look at the last column. A rule that is strictly above everything else
+collapses the frontier to (nearly) a single solution, so the rulebooks peeling
+can attack are exactly the ones that were already trivial — `exact` solves them
+in under 2 ms. And the rulebooks that are actually hard, `diamond4` and the flat
+ones, have no unique singleton top at all, so **zero** rules peel and the
+residual is the whole problem.
+
+This corrects an earlier reading of the 97% figure as a win. The reduction is
+real and the lemma is sound — `peel-exact` reproduces the exact frontier on
+every validated case — but on this instance suite it never converts into a
+runtime saving, and `peel-exact` is in fact a hair slower than `exact` from the
+reduction overhead.
+
+The one place this could still pay off is a rulebook with a genuine hierarchy
+*above* a wide antichain — a global top rule that does not collapse the frontier
+because several incomparable rules sit below it. `chain2top` was meant to be
+that case but its frontier still collapsed to 1. Constructing an instance family
+where peeling meets a large residual frontier is the open question.
+
+### Seeding the exact search does not work
+
+Contention-free A/B, single-threaded, both arms back to back with alternating
+order and 3 repeats, 30 paired cases: `seed-exact` was faster in **0/30**
+(median 0.98x, min 0.78x, max 1.02x). See
+[`results/ab_seed.csv`](results/ab_seed.csv).
+
+The mechanism is structural. Seeding could only matter on the flat rulebooks,
+whose quotient DAG is an antichain — so TopoLex hands over the N lexicographic
+*corner* points, each minimal in one rule and large in the rest. Those dominate
+almost nothing. Meanwhile the exact search's queue is already lexicographically
+ordered, so it reaches the best of those points in its first expansion anyway.
+The warm start pays for N Dijkstra phases and prunes nothing new.
+
+### What this says about the original question
+
+For the hard cases, RA\*pex remains the thing to beat; neither new angle
+displaces it. What the new angles add is a **different guarantee**, not a faster
+route to the same one:
+
+- need every answer certified optimal, and a sample is enough → `topolex`, four
+  orders of magnitude cheaper
+- need coverage of the whole frontier → RA\*pex, accepting that some returned
+  solutions are not optimal
+- rulebook has a singleton global top → peel it, exactly, for free — but expect
+  the frontier to be small anyway
+
+---
+
+## 7. Open threads
 
 1. **Peel past the antichain.** Replace the Dijkstra reduction with a
    Pareto-optimal-subgraph reduction when the source class is an antichain of
-   several rules — would extend the exact polynomial prefix much further.
-2. **`topolex` as a seed.** Its output is a set of certified-optimal points,
-   available in milliseconds. Feeding them to `exact`/RA\*pex as an initial
-   solution set should prune hard from the first expansion — not yet tried.
-3. **Which points does `topolex` miss?** Characterising the non-lex-supported part
-   of `P_R` would say when the cheap sound set is good enough on its own.
-4. **Real road networks.** The suite is synthetic (random / grid / layered DAG).
-   The DIMACS BAY roadmap used in both papers is not included here.
+   several rules. This is the one change that would let peeling touch
+   `diamond4` and the flat books, i.e. the cases that actually cost time.
+2. **Instances where peeling meets a large frontier.** Every hierarchical
+   rulebook here collapsed the frontier to ~1 solution, which hid whatever
+   peeling is worth. Needs a construction where a global top rule admits many
+   optimal solutions below it.
+3. **More linear extensions, better coverage?** TopoLex currently returns one
+   point per extension. Whether interpolating between corner points (or
+   perturbing the phase order) recovers interior frontier points cheaply is
+   untested.
+4. **Characterise what TopoLex misses.** Which part of `P_R` is
+   non-lex-supported, and can its size be predicted from the rulebook shape
+   before running anything?
+5. **Real road networks.** The suite is synthetic. The DIMACS BAY roadmap used
+   in both papers is not included here, and RA\*pex is a reimplementation rather
+   than the reference binary (no Boost in the build environment), so absolute
+   runtimes are not comparable to the published figures — only the relative
+   orderings measured here are.
