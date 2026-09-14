@@ -1,0 +1,10 @@
+bin/
+logs/
+# Generated instances are reproducible from bench/gen_instances.py with the
+# pinned seed, and the graph files are large, so they are not tracked.
+instances/*.graph
+instances/*.query
+instances/manifest.tsv
+# Raw per-run rows are large; the scored summary and the report are tracked.
+results/runs*.csv
+__pycache__/
