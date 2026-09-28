@@ -204,6 +204,84 @@ inline bool loadRulebook(const std::string &path, Rulebook &rb, Eps &eps) {
     return true;
 }
 
+// DIMACS .gr format, as used by the RA*pex reference implementation
+// (Infus3d/Rulebook_approximation) and the 9th DIMACS Implementation Challenge.
+//
+// One file per objective, all listing the same arcs in the same order:
+//
+//   c comment line
+//   p sp <nodes> <arcs>
+//   a <from> <to> <weight>
+//
+// Vertex ids are 1-based; we keep them as given and size the graph to max+1, so
+// vertex 0 is simply unused. That keeps ids comparable with the query files and
+// with the reference implementation's output.
+inline bool loadGraphDimacs(const std::vector<std::string> &files, Graph &g) {
+    if (files.empty()) {
+        std::cerr << "no .gr files given\n";
+        return false;
+    }
+    g.num_rules = files.size();
+    g.edges.clear();
+    uint32_t max_id = 0;
+
+    for (size_t r = 0; r < files.size(); ++r) {
+        std::ifstream f(files[r]);
+        if (!f) {
+            std::cerr << "cannot open gr file " << files[r] << "\n";
+            return false;
+        }
+        std::string line;
+        size_t idx = 0;
+        while (std::getline(f, line)) {
+            if (line.empty() || line[0] == 'c' || line[0] == 'p') continue;
+            if (line[0] != 'a') continue;
+            std::istringstream ss(line);
+            char tag;
+            uint32_t u, v;
+            int64_t w;
+            ss >> tag >> u >> v >> w;
+            if (!ss) {
+                std::cerr << "malformed arc in " << files[r] << ": " << line << "\n";
+                return false;
+            }
+            if (r == 0) {
+                Edge e;
+                e.from = u;
+                e.to = v;
+                e.cost.assign(files.size(), 0);
+                e.cost[0] = w;
+                g.edges.push_back(std::move(e));
+                max_id = std::max({max_id, u, v});
+            } else {
+                if (idx >= g.edges.size()) {
+                    std::cerr << files[r] << " has more arcs than " << files[0] << "\n";
+                    return false;
+                }
+                // The objective files must agree arc for arc, or the cost
+                // vectors would silently mix different edges.
+                if (g.edges[idx].from != u || g.edges[idx].to != v) {
+                    std::cerr << "arc mismatch at line " << idx << " of " << files[r]
+                              << ": expected " << g.edges[idx].from << "->"
+                              << g.edges[idx].to << ", got " << u << "->" << v << "\n";
+                    return false;
+                }
+                g.edges[idx].cost[r] = w;
+            }
+            ++idx;
+        }
+        if (r > 0 && idx != g.edges.size()) {
+            std::cerr << files[r] << " has " << idx << " arcs, " << files[0]
+                      << " has " << g.edges.size() << "\n";
+            return false;
+        }
+    }
+
+    g.n = max_id + 1;
+    g.build();
+    return true;
+}
+
 inline bool loadQueries(const std::string &path,
                         std::vector<std::pair<uint32_t, uint32_t>> &q) {
     std::ifstream f(path);
@@ -211,8 +289,17 @@ inline bool loadQueries(const std::string &path,
         std::cerr << "cannot open query file " << path << "\n";
         return false;
     }
-    uint32_t s, t;
-    while (f >> s >> t) q.push_back({s, t});
+    // The reference implementation's instance files are comma separated
+    // ("s,t"); plain whitespace is accepted too.
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == '#' || line[0] == 'c') continue;
+        for (char &ch : line)
+            if (ch == ',' || ch == ';' || ch == '\t') ch = ' ';
+        std::istringstream ss(line);
+        uint32_t s, t;
+        if (ss >> s >> t) q.push_back({s, t});
+    }
     return true;
 }
 

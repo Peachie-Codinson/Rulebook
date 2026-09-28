@@ -16,7 +16,11 @@ namespace {
 
 void usage() {
     std::cerr <<
-        "usage: rbsearch --graph G --rules R --query Q --alg A [options]\n"
+        "usage: rbsearch (--graph G | --gr F1,F2,..) --rules R --query Q --alg A\n"
+        "  --graph    single-file instance (n m N header, then u v c0..cN-1)\n"
+        "  --gr       comma-separated DIMACS .gr files, ONE PER OBJECTIVE, all\n"
+        "             listing the same arcs in the same order -- the format used\n"
+        "             by Infus3d/Rulebook_approximation\n"
         "  --alg      exact | rapex | rapex-nodr | topolex | seed-exact |\n"
         "             peel-exact | peel-rapex | peel-seed-exact | peel-only |\n"
         "             brute\n"
@@ -51,6 +55,7 @@ std::string arg(int argc, char **argv, const std::string &key,
 
 int main(int argc, char **argv) {
     std::string gfile = arg(argc, argv, "--graph", "");
+    std::string grfiles = arg(argc, argv, "--gr", "");
     std::string rfile = arg(argc, argv, "--rules", "");
     std::string qfile = arg(argc, argv, "--query", "");
     std::string alg = arg(argc, argv, "--alg", "");
@@ -59,7 +64,8 @@ int main(int argc, char **argv) {
     long max_ext = std::stol(arg(argc, argv, "--max-ext", "0"));
     uint32_t seed = static_cast<uint32_t>(std::stoul(arg(argc, argv, "--seed", "1")));
 
-    if (gfile.empty() || rfile.empty() || qfile.empty() || alg.empty()) {
+    if ((gfile.empty() && grfiles.empty()) || rfile.empty() || qfile.empty() ||
+        alg.empty()) {
         usage();
         return 2;
     }
@@ -68,9 +74,19 @@ int main(int argc, char **argv) {
     Rulebook rb;
     Eps eps;
     std::vector<std::pair<uint32_t, uint32_t>> queries;
-    if (!loadGraph(gfile, g) || !loadRulebook(rfile, rb, eps) ||
-        !loadQueries(qfile, queries))
+    if (!grfiles.empty()) {
+        std::vector<std::string> parts;
+        std::string cur;
+        for (char c : grfiles) {
+            if (c == ',') { if (!cur.empty()) parts.push_back(cur); cur.clear(); }
+            else cur += c;
+        }
+        if (!cur.empty()) parts.push_back(cur);
+        if (!loadGraphDimacs(parts, g)) return 2;
+    } else if (!loadGraph(gfile, g)) {
         return 2;
+    }
+    if (!loadRulebook(rfile, rb, eps) || !loadQueries(qfile, queries)) return 2;
 
     if (!eps_override.empty())
         std::fill(eps.begin(), eps.end(), std::stod(eps_override));
@@ -86,7 +102,8 @@ int main(int argc, char **argv) {
     std::vector<Cost> h;
     bool needs_h = (alg == "rapex" || alg == "rapex-nodr");
 
-    std::cout << "{\"alg\":\"" << alg << "\",\"graph\":\"" << gfile
+    std::cout << "{\"alg\":\"" << alg << "\",\"graph\":\""
+              << (grfiles.empty() ? gfile : grfiles)
               << "\",\"rules\":\"" << rfile << "\",\"n\":" << g.n
               << ",\"m\":" << g.edges.size() << ",\"N\":" << g.num_rules
               << ",\"classes\":" << rb.numClasses() << ",\"eps\":" << eps[0]
