@@ -117,13 +117,16 @@ def fmt(x, nd=3):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--runs", default=os.path.join(ROOT, "results", "runs.csv"))
+    ap.add_argument("--runs", nargs="+",
+                    default=[os.path.join(ROOT, "results", "runs.csv")])
     ap.add_argument("--instances", default=os.path.join(ROOT, "instances"))
     ap.add_argument("--out", default=os.path.join(ROOT, "results", "report.md"))
     ap.add_argument("--csv-out", default=os.path.join(ROOT, "results", "scored.csv"))
     args = ap.parse_args()
 
-    rows = list(csv.DictReader(open(args.runs)))
+    rows = []
+    for path in args.runs:
+        rows.extend(csv.DictReader(open(path)))
     for r in rows:
         r["timed_out"] = r["timed_out"].lower() == "true"
         r["killed"] = r["killed"].lower() == "true"
@@ -163,6 +166,33 @@ def main():
     for r in rows:
         if r["timed_out"] or r["killed"]:
             blame[r["alg"]] += 1
+
+    # How many cases each solver finished inside the cap. This is deliberately
+    # computed BEFORE the drop rule: dropping a case for everyone as soon as one
+    # solver is capped keeps the averages like-for-like, but it also hides the
+    # single most useful fact -- that the cheap solvers finish instances the
+    # exact search cannot touch at all. Reach is counted per solver over the
+    # (graph, rulebook, query) cases that solver was actually asked to run.
+    universe = collections.defaultdict(set)   # (graph, rulebook) -> {(s, t)}
+    for r in rows:
+        if r["s"] != "-1":
+            universe[(r["graph"], r["rulebook"])].add((r["s"], r["t"]))
+
+    attempted = collections.defaultdict(set)  # (alg, eps) -> {case}
+    solved = collections.defaultdict(set)
+    for r in rows:
+        key = (r["alg"], float(r["eps"]))
+        gr = (r["graph"], r["rulebook"])
+        if r["s"] == "-1":
+            # A whole file skipped or killed: every query of it counts as
+            # attempted-and-unsolved for this solver.
+            for st in universe.get(gr, set()):
+                attempted[key].add(gr + st)
+            continue
+        c = gr + (r["s"], r["t"])
+        attempted[key].add(c)
+        if not (r["timed_out"] or r["killed"]):
+            solved[key].add(c)
 
     # --- Step 2: score every kept run against the exact frontier -------------
     rbcache = {}
@@ -225,6 +255,22 @@ def main():
         for row in rows_:
             out.append("| " + " | ".join(str(row[k]) for k in keys) + " |")
         out.append("")
+
+    # Reach: what each solver can finish at all, before the drop rule.
+    out.append("\n## Reach — cases finished inside the 10-minute cap\n")
+    out.append("Counted over every case the solver was asked to run, *before* "
+               "cases are dropped for the like-for-like comparison below. This is "
+               "the number that says which angles scale.\n")
+    rrows = []
+    for (alg, eps), att in sorted(attempted.items()):
+        if not att:
+            continue
+        sv = len(solved[(alg, eps)])
+        rrows.append({"alg": f"`{alg}`", "eps": eps,
+                      "finished": f"{sv}/{len(att)}",
+                      "rate": fmt(sv / len(att))})
+    table(rrows, ["alg", "eps", "finished", "rate"],
+          ["alg", "eps", "finished inside cap", "rate"])
 
     # Per-rulebook summary, averaged over instances.
     out.append("\n## By rulebook shape\n")

@@ -133,6 +133,10 @@ bench/gen_instances.py  instance suite (random, grid, layered DAG, tiny)
 bench/validate.py       cross-validation against brute force
 bench/run_bench.py      the sweep, with the wall-clock cap
 bench/analyze.py        scoring and report generation
+bench/ab_seed.py        contention-free A/B for the seeding question
+bench/compare_rapex_topolex.py  RA*pex vs multi-level Dijkstra, two-way, no
+                        ground truth needed -- see section 7
+bench/fetch_dimacs.sh   grab the public DIMACS road networks
 results/report.md       generated comparison
 ```
 
@@ -184,15 +188,206 @@ of the dominance relation:
 
 ---
 
-## 6. Open threads
+## 6. Findings
+
+Full sweep: 294 cases (random / grid / layered-DAG graphs x 7 rulebook shapes),
+10-minute per-case cap, 13 cases dropped, 281 kept. Generated report in
+[`results/report.md`](results/report.md).
+
+The short version: **the two cheap angles work exactly where they are not
+needed, and the expensive case stays expensive.**
+
+### TopoLex is sound, fast, and does not cover the frontier
+
+On `flat4`, the hardest shape (mean frontier 949 solutions):
+
+| solver | mean s | max s | size | sound | recall | eps\* |
+|---|---|---|---|---|---|---|
+| `exact` | 5.51 | 77.40 | 949 | 30/30 | 1.000 | 0.000 |
+| `rapex` eps=0.01 | 4.03 | 62.55 | 561 | **23/30** | 0.773 | 0.010 |
+| `topolex` | **0.0011** | 0.0075 | 4.0 | **30/30** | **0.158** | 1.552 |
+
+The soundness lemma holds up empirically: `topolex` never returned a
+non-optimal solution, in 294/294 benchmark cases and 126/126 brute-force
+validation triples. RA\*pex at eps=0.01 returned a non-optimal solution in 7 of
+30 `flat4` cases — which is not a bug, Definition 6 of the paper explicitly
+permits it, but it is the concrete trade between the two guarantees.
+
+The cost is coverage. TopoLex returns one solution per linear extension — 4 on a
+flat 4-rule book, 2 on `diamond4` — so it recovers 16–26% of the frontier and
+needs eps ~1.5 to cover the rest. It is a **certified-optimal sample**, not a
+frontier approximation, and should not be sold as the latter.
+
+### Peeling is exact and nearly free, and buys nothing
+
+Peeling removes ~97% of edges where it applies:
+
+| rulebook | rules peeled | edges left | frontier size |
+|---|---|---|---|
+| `chain4` | 4.00 | 2.8% | 1.0 |
+| `chain2top` | 2.00 | 2.8% | 1.0 |
+| `top1` | 1.00 | 2.9% | 1.0 |
+| `diamond4` | **0.00** | 100% | 30.2 |
+| `flat4` | **0.00** | 100% | 949.0 |
+
+But look at the last column. A rule that is strictly above everything else
+collapses the frontier to (nearly) a single solution, so the rulebooks peeling
+can attack are exactly the ones that were already trivial — `exact` solves them
+in under 2 ms. And the rulebooks that are actually hard, `diamond4` and the flat
+ones, have no unique singleton top at all, so **zero** rules peel and the
+residual is the whole problem.
+
+This corrects an earlier reading of the 97% figure as a win. The reduction is
+real and the lemma is sound — `peel-exact` reproduces the exact frontier on
+every validated case — but on this instance suite it never converts into a
+runtime saving, and `peel-exact` is in fact a hair slower than `exact` from the
+reduction overhead.
+
+The one place this could still pay off is a rulebook with a genuine hierarchy
+*above* a wide antichain — a global top rule that does not collapse the frontier
+because several incomparable rules sit below it. `chain2top` was meant to be
+that case but its frontier still collapsed to 1. Constructing an instance family
+where peeling meets a large residual frontier is the open question.
+
+### Seeding the exact search does not work
+
+Contention-free A/B, single-threaded, both arms back to back with alternating
+order and 3 repeats, 30 paired cases: `seed-exact` was faster in **0/30**
+(median 0.98x, min 0.78x, max 1.02x). See
+[`results/ab_seed.csv`](results/ab_seed.csv).
+
+The mechanism is structural. Seeding could only matter on the flat rulebooks,
+whose quotient DAG is an antichain — so TopoLex hands over the N lexicographic
+*corner* points, each minimal in one rule and large in the rest. Those dominate
+almost nothing. Meanwhile the exact search's queue is already lexicographically
+ordered, so it reaches the best of those points in its first expansion anyway.
+The warm start pays for N Dijkstra phases and prunes nothing new.
+
+### What this says about the original question
+
+For the hard cases, RA\*pex remains the thing to beat; neither new angle
+displaces it. What the new angles add is a **different guarantee**, not a faster
+route to the same one:
+
+- need every answer certified optimal, and a sample is enough → `topolex`, four
+  orders of magnitude cheaper
+- need coverage of the whole frontier → RA\*pex, accepting that some returned
+  solutions are not optimal
+- rulebook has a singleton global top → peel it, exactly, for free — but expect
+  the frontier to be small anyway
+
+---
+
+## 7. Just RA\*pex vs multi-level Dijkstra, on the reference dataset
+
+`bench/compare_rapex_topolex.py` runs only those two and scores them against
+each other. No exact ground truth is needed, which is the point: on a road
+network the size of BAY the exact frontier is not computable in any reasonable
+budget, so the usual reference is unavailable.
+
+What makes the comparison work anyway is that **TopoLex's output is itself a
+certificate**. Every solution it returns is provably rulebook-optimal, so:
+
+- an RA\*pex solution strictly rule-dominated by a TopoLex solution is **proven
+  non-optimal**, with no frontier required;
+- the eps RA\*pex needs to cover TopoLex's certified points is a **live test of
+  RA\*pex's Theorem 1** — it must come out at or below the eps it was run with;
+- the eps TopoLex needs to cover RA\*pex's set measures the price of TopoLex's
+  incompleteness;
+- a TopoLex solution strictly dominated by RA\*pex would contradict the
+  soundness lemma, and is flagged loudly if it ever happens.
+
+Not reported, deliberately: the plain (eps = 0) coverage fractions between the
+two sets. Weak rule-dominance is antisymmetric on distinct vectors, so two
+distinct *optimal* points can never weakly dominate one another — those
+fractions are structurally zero and just restate `shared`.
+
+### Getting the dataset
+
+The reference repo ships code but no data. Two sources:
+
+```sh
+# 1. the public DIMACS road networks (objectives 1 and 2: distance, time)
+bench/fetch_dimacs.sh BAY data/dimacs      # or NY for a quick smoke test
+
+# 2. by hand, from the Google Drive folder linked in the reference repo README
+#    https://github.com/Infus3d/Rulebook_approximation
+#      USA-road-3.BAY.gr     third objective
+#      USA-road-4.BAY.gr     fourth objective (BAY only)
+#      BAY_instances.txt     queries, one "s,t" per line
+#      4_rules_eps_0.01.txt  rulebook
+#    -> drop them all in data/dimacs/
+```
+
+### Running it
+
+```sh
+make
+
+python3 bench/compare_rapex_topolex.py \
+  --gr data/dimacs/USA-road-d.BAY.gr,data/dimacs/USA-road-t.BAY.gr,data/dimacs/USA-road-3.BAY.gr,data/dimacs/USA-road-4.BAY.gr \
+  --rules data/dimacs/4_rules_eps_0.01.txt \
+  --query data/dimacs/BAY_instances.txt \
+  --eps 0.01 \
+  --timeout 600 \
+  --out results/rapex_vs_topolex_BAY.csv
+```
+
+`--gr` takes one DIMACS file per objective, comma separated, in rule order — the
+same convention as the reference implementation's `-m` flag. The rules file
+format is unchanged from that repo, so its own rules files work as they are.
+`--eps` applies to RA\*pex only; TopoLex has no approximation parameter.
+`--max-ext N` caps TopoLex's linear extensions for an anytime variant (default:
+all of them, which is `M!` for `M` quotient classes).
+
+Either solver alone, JSON on stdout:
+
+```sh
+./bin/rbsearch --gr <files> --rules <rules> --query <queries> --alg rapex   --eps 0.01
+./bin/rbsearch --gr <files> --rules <rules> --query <queries> --alg topolex --eps 0
+```
+
+### Shape of the output
+
+From a 4-objective `diamond4` run on a synthetic DIMACS-format grid (1.6k nodes,
+6.2k arcs) used to verify the path end to end:
+
+```
+       1 -> 1600   rapex   0.338s n=75   topolex 0.001s n=2   shared=0  rapex_bad=0
+      40 -> 1561   rapex   0.185s n=72   topolex 0.001s n=2   shared=0  rapex_bad=0
+
+topolex speedup over rapex               : median 210.0x
+eps TopoLex needs to cover RA*pex's set  : median 0.549  (max 0.624)
+eps RA*pex needs to cover certified pts  : max 0.009896 vs eps=0.01  (within guarantee)
+RA*pex solutions PROVEN non-optimal      : 0 across 0/3 queries
+TopoLex soundness violations             : 0 (as expected)
+```
+
+RA\*pex landing at 0.009896 against a 0.01 budget is Theorem 1 holding with
+almost nothing to spare — which is what you would hope to see, and is worth
+re-checking on BAY where the frontiers are far larger.
+
+---
+
+## 8. Open threads
 
 1. **Peel past the antichain.** Replace the Dijkstra reduction with a
    Pareto-optimal-subgraph reduction when the source class is an antichain of
-   several rules — would extend the exact polynomial prefix much further.
-2. **`topolex` as a seed.** Its output is a set of certified-optimal points,
-   available in milliseconds. Feeding them to `exact`/RA\*pex as an initial
-   solution set should prune hard from the first expansion — not yet tried.
-3. **Which points does `topolex` miss?** Characterising the non-lex-supported part
-   of `P_R` would say when the cheap sound set is good enough on its own.
-4. **Real road networks.** The suite is synthetic (random / grid / layered DAG).
-   The DIMACS BAY roadmap used in both papers is not included here.
+   several rules. This is the one change that would let peeling touch
+   `diamond4` and the flat books, i.e. the cases that actually cost time.
+2. **Instances where peeling meets a large frontier.** Every hierarchical
+   rulebook here collapsed the frontier to ~1 solution, which hid whatever
+   peeling is worth. Needs a construction where a global top rule admits many
+   optimal solutions below it.
+3. **More linear extensions, better coverage?** TopoLex currently returns one
+   point per extension. Whether interpolating between corner points (or
+   perturbing the phase order) recovers interior frontier points cheaply is
+   untested.
+4. **Characterise what TopoLex misses.** Which part of `P_R` is
+   non-lex-supported, and can its size be predicted from the rulebook shape
+   before running anything?
+5. **Real road networks.** The suite is synthetic. The DIMACS BAY roadmap used
+   in both papers is not included here, and RA\*pex is a reimplementation rather
+   than the reference binary (no Boost in the build environment), so absolute
+   runtimes are not comparable to the published figures — only the relative
+   orderings measured here are.
